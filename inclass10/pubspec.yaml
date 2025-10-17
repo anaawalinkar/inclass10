@@ -1,4 +1,4 @@
-name: flutter_database
+name: inclass10
 description: A Flutter app with SQLite local storage
 
 publish_to: 'none'
