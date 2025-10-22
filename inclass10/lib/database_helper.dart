@@ -1,81 +1,164 @@
-import 'package:path/path.dart';
 import 'package:sqflite/sqflite.dart';
-import 'package:path_provider/path_provider.dart';
+import 'package:path/path.dart';
 
 class DatabaseHelper {
-  static const _databaseName = "MyDatabase.db";
-  static const _databaseVersion = 1;
+  static final DatabaseHelper _instance = DatabaseHelper._internal();
+  factory DatabaseHelper() => _instance;
+  DatabaseHelper._internal();
 
-  static const table = 'my_table';
+  static Database? _database;
 
-  static const columnId = '_id';
-  static const columnName = 'name';
-  static const columnAge = 'age';
+  Future<Database> get database async {
+    _database ??= await _initDatabase();
+    return _database!;
+  }
 
-  late Database _db;
-
-  // this opens the database (and creates it if it doesn't exist)
-  Future<void> init() async {
-    final documentsDirectory = await getApplicationDocumentsDirectory();
-    final path = join(documentsDirectory.path, _databaseName);
-    _db = await openDatabase(
+  Future<Database> _initDatabase() async {
+    String path = join(await getDatabasesPath(), 'card_organizer.db');
+    return await openDatabase(
       path,
-      version: _databaseVersion,
-      onCreate: _onCreate,
+      version: 1,
+      onCreate: _createTables,
     );
   }
 
-  // SQL code to create the database table
-  Future _onCreate(Database db, int version) async {
+  Future<void> _createTables(Database db, int version) async {
+    // Create folders table
     await db.execute('''
-          CREATE TABLE $table (
-            $columnId INTEGER PRIMARY KEY,
-            $columnName TEXT NOT NULL,
-            $columnAge INTEGER NOT NULL
-          )
-          ''');
+      CREATE TABLE folders(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      )
+    ''');
+
+    // Create cards table
+    await db.execute('''
+      CREATE TABLE cards(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        suit TEXT NOT NULL,
+        image_url TEXT,
+        folder_id INTEGER,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (folder_id) REFERENCES folders (id)
+      )
+    ''');
+
+    // Prepopulate folders
+    await _prepopulateFolders(db);
+    // Prepopulate cards
+    await _prepopulateCards(db);
   }
 
-  // Helper methods
+  Future<void> _prepopulateFolders(Database db) async {
+    final folders = [
+      {'name': 'Hearts', 'created_at': DateTime.now().toIso8601String()},
+      {'name': 'Spades', 'created_at': DateTime.now().toIso8601String()},
+      {'name': 'Diamonds', 'created_at': DateTime.now().toIso8601String()},
+      {'name': 'Clubs', 'created_at': DateTime.now().toIso8601String()},
+    ];
 
-  // Inserts a row in the database where each key in the Map is a column name
-  // and the value is the column value. The return value is the id of the
-  // inserted row.
-  Future<int> insert(Map<String, dynamic> row) async {
-    return await _db.insert(table, row);
+    for (final folder in folders) {
+      await db.insert('folders', folder);
+    }
   }
 
-  // All of the rows are returned as a list of maps, where each map is
-  // a key-value list of columns.
-  Future<List<Map<String, dynamic>>> queryAllRows() async {
-    return await _db.query(table);
+  Future<void> _prepopulateCards(Database db) async {
+    final suits = ['Hearts', 'Spades', 'Diamonds', 'Clubs'];
+    final cardNames = [
+      'Ace', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'Jack', 'Queen', 'King'
+    ];
+
+    for (final suit in suits) {
+      for (int i = 0; i < cardNames.length; i++) {
+        final card = {
+          'name': cardNames[i],
+          'suit': suit,
+          'image_url': 'assets/images/${cardNames[i].toLowerCase()}_of_${suit.toLowerCase()}.png',
+          'folder_id': null,
+          'created_at': DateTime.now().toIso8601String(),
+        };
+        await db.insert('cards', card);
+      }
+    }
   }
 
-  // All of the methods (insert, query, update, delete) can also be done using
-  // raw SQL commands. This method uses a raw query to give the row count.
-  Future<int> queryRowCount() async {
-    final results = await _db.rawQuery('SELECT COUNT(*) FROM $table');
-    return Sqflite.firstIntValue(results) ?? 0;
+  // Folder operations
+  Future<List<Map<String, dynamic>>> getFolders() async {
+    final db = await database;
+    return await db.query('folders');
   }
 
-  // We are assuming here that the id column in the map is set. The other
-  // column values will be used to update the row.
-  Future<int> update(Map<String, dynamic> row) async {
-    int id = row[columnId];
-    return await _db.update(
-      table,
-      row,
-      where: '$columnId = ?',
+  Future<int> updateFolder(int id, String name) async {
+    final db = await database;
+    return await db.update(
+      'folders',
+      {'name': name},
+      where: 'id = ?',
       whereArgs: [id],
     );
   }
 
-  // Deletes the row specified by the id. The number of affected rows is
-  // returned. This should be 1 as long as the row exists.
-  Future<int> delete(int id) async {
-    return await _db.delete(
-      table,
-      where: '$columnId = ?',
+  Future<int> deleteFolder(int id) async {
+    final db = await database;
+    // First, remove folder association from cards
+    await db.update(
+      'cards',
+      {'folder_id': null},
+      where: 'folder_id = ?',
+      whereArgs: [id],
+    );
+    // Then delete the folder
+    return await db.delete(
+      'folders',
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+  }
+
+  // Card operations
+  Future<List<Map<String, dynamic>>> getCardsByFolder(int? folderId) async {
+    final db = await database;
+    if (folderId == null) {
+      return await db.query('cards', where: 'folder_id IS NULL');
+    }
+    return await db.query(
+      'cards',
+      where: 'folder_id = ?',
+      whereArgs: [folderId],
+    );
+  }
+
+  Future<List<Map<String, dynamic>>> getAllCards() async {
+    final db = await database;
+    return await db.query('cards');
+  }
+
+  Future<int> updateCardFolder(int cardId, int? folderId) async {
+    final db = await database;
+    return await db.update(
+      'cards',
+      {'folder_id': folderId},
+      where: 'id = ?',
+      whereArgs: [cardId],
+    );
+  }
+
+  Future<int> getCardCountInFolder(int folderId) async {
+    final db = await database;
+    final result = await db.rawQuery(
+      'SELECT COUNT(*) as count FROM cards WHERE folder_id = ?',
+      [folderId],
+    );
+    return result.first['count'] as int;
+  }
+
+  Future<int> deleteCard(int id) async {
+    final db = await database;
+    return await db.delete(
+      'cards',
+      where: 'id = ?',
       whereArgs: [id],
     );
   }
